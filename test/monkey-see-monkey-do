@@ -40,6 +40,10 @@ def decode_trace_line(l):
 
     m = match(r'0x(.+): (.+) at (.+):(.+)', output)
 
+    # Unresolved frames should leave the original test failure visible.
+    if m is None:
+        return l
+
     return '{}:{}({})[0x{}]'.format(
         m.group(3), m.group(4), m.group(2), m.group(1))
 

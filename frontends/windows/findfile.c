@@ -46,25 +46,42 @@ nsws_init_resource(const char *resource_path)
 	char **pathv; /* resource path string vector */
 	char **respath; /* resource paths vector */
 	const char *lang = NULL;
-	char *winpath;
-	int pathi;
+	char winpath[MAX_PATH];
+	const char suffix[] = "windows\\res";
+	DWORD length;
+	size_t pathi;
 	char *slsh;
 
 	pathv = filepath_path_to_strvec(resource_path);
 	if (pathv == NULL)
 		return NULL;
  
-	winpath = malloc(MAX_PATH);
-	GetModuleFileName(NULL, winpath, MAX_PATH);
-	slsh = strrchr(winpath, '\\');
-	if (slsh != NULL)
-		*slsh=0;
-	strncat(winpath, "\\windows\\res", MAX_PATH);
+	/* Skip the optional path if Windows cannot return a complete name. */
+	length = GetModuleFileNameA(NULL, winpath, sizeof(winpath));
+	if (length != 0 && length < sizeof(winpath)) {
+		slsh = strrchr(winpath, '\\');
+		if (slsh != NULL) {
+			char *leaf = slsh + 1;
 
-	pathi = 0;
-	while (pathv[pathi] != NULL)
-		pathi++;
-	pathv[pathi] = winpath;
+			/* Installed and portable builds keep resources by the executable.
+			 * Keep the legacy windows\res layout for development builds.
+			 */
+			*leaf = '\0';
+			if ((size_t)(leaf - winpath) <= sizeof(winpath) - sizeof(suffix)) {
+				DWORD attrs;
+
+				memcpy(leaf, suffix, sizeof(suffix));
+				attrs = GetFileAttributesA(winpath);
+				if (attrs == INVALID_FILE_ATTRIBUTES ||
+				    (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0)
+					*leaf = '\0';
+			}
+			pathi = 0;
+			while (pathv[pathi] != NULL)
+				pathi++;
+			pathv[pathi] = strdup(winpath);
+		}
+	}
 
 	respath = filepath_generate(pathv, &lang);
 

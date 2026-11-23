@@ -27,6 +27,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,7 +70,9 @@ char *filepath_vsfindfile(char *str, const char *format, va_list ap)
 	if (realpathname != NULL) {
 		/* sucessfully expanded pathname */
 		if (access(realpathname, R_OK) != 0) {
-			/* unable to read the file */
+			/* realpath allocates the result when no buffer was supplied. */
+			if (str == NULL)
+				free(realpathname);
 			return NULL;
 		}
 	}
@@ -191,26 +194,34 @@ filepath_generate(char * const *pathv, const char * const *langv)
 	char *tmppath;
 	int tmppathlen;
 
+	if (pathv == NULL || langv == NULL)
+		return NULL;
+
 	respath = calloc(MAX_RESPATH, sizeof(char *));
 
 	while ((respath != NULL) &&
-	       (pathv[pathc] != NULL)) {
+	       (pathv[pathc] != NULL) &&
+	       (respathc < MAX_RESPATH - 1)) {
 		if ((stat(pathv[pathc], &dstat) == 0) &&
 		    S_ISDIR(dstat.st_mode)) {
 			/* path element exists and is a directory */
 			langc = 0;
-			while (langv[langc] != NULL) {
+			/* Reserve slots for the base directory and NULL terminator. */
+			while ((langv[langc] != NULL) &&
+			       (respathc < MAX_RESPATH - 2)) {
 				tmppathlen = snprintf(NULL,
 						      0,
 						      "%s/%s",
 						      pathv[pathc],
 						      langv[langc]);
-				tmppath = malloc(tmppathlen + 1);
+				if (tmppathlen < 0)
+					break;
+				tmppath = malloc((size_t)tmppathlen + 1);
 				if (tmppath == NULL) {
 					break;
 				}
 				snprintf(tmppath,
-					 tmppathlen + 1,
+					 (size_t)tmppathlen + 1,
 					 "%s/%s",
 					 pathv[pathc],
 					 langv[langc]);
@@ -225,7 +236,13 @@ filepath_generate(char * const *pathv, const char * const *langv)
 
 				langc++;
 			}
-			respath[respathc++] = strdup(pathv[pathc]);
+			/* Keep the vector contiguous if allocating the base path fails. */
+			tmppath = strdup(pathv[pathc]);
+			if (tmppath == NULL) {
+				filepath_free_strvec(respath);
+				return NULL;
+			}
+			respath[respathc++] = tmppath;
 		}
 		pathc++;
 	}
@@ -241,67 +258,65 @@ filepath_generate(char * const *pathv, const char * const *langv)
  * @return A string with the expanded path or NULL on empty expansion or error.
  */
 static char *
-expand_path(const char *path, int pathlen)
+expand_path(const char *path, size_t pathlen)
 {
-	char *exp;
-	int explen;
-	int cstart = -1;
-	int cloop = 0;
-	char *envv;
-	int envlen;
-	int replen; /* length of replacement */
+	char *exp = malloc(pathlen + 1);
+	size_t explen = pathlen;
+	size_t cursor = 0;
 
-	exp = malloc(pathlen + 1);
 	if (exp == NULL)
 		return NULL;
 
 	memcpy(exp, path, pathlen);
 	exp[pathlen] = 0;
 
-	explen = pathlen;
+	while (cursor < explen) {
+		char *closing;
+		const char *value;
+		size_t end;
+		size_t tokenlen;
+		size_t valuelen;
 
-	while (exp[cloop] != 0) {
-		if ((exp[cloop] == '$') &&
-		    (exp[cloop + 1] == '{')) {
-			cstart = cloop;
-			cloop++;
+		if (exp[cursor] != '$' || exp[cursor + 1] != '{') {
+			cursor++;
+			continue;
 		}
+		closing = strchr(exp + cursor + 2, '}');
+		if (closing == NULL)
+			break;
 
-		if ((cstart != -1) &&
-		    (exp[cloop] == '}')) {
-			replen = cloop - cstart;
-			exp[cloop] = 0;
-			envv = getenv(exp + cstart + 2);
-			if (envv == NULL) {
-				memmove(exp + cstart,
-					exp + cloop + 1,
-					explen - cloop);
-				explen -= replen;
-			} else {
-				char *tmp;
-				envlen = strlen(envv);
-				tmp = realloc(exp, explen + envlen - replen);
-				if (tmp == NULL) {
-					free(exp);
-					return NULL;
-				}
-				exp = tmp;
-				memmove(exp + cstart + envlen,
-					exp + cloop + 1,
-					explen - cloop );
-				memmove(exp + cstart, envv, envlen);
-				explen += envlen - replen;
+		end = closing - exp + 1;
+		tokenlen = end - cursor;
+		*closing = 0;
+		value = getenv(exp + cursor + 2);
+		valuelen = value == NULL ? 0 : strlen(value);
+
+		/* Grow before copying. Keep the unread suffix intact on shrink. */
+		if (valuelen > tokenlen) {
+			char *larger;
+
+			if (valuelen > SIZE_MAX - (explen - tokenlen) - 1) {
+				free(exp);
+				return NULL;
 			}
-			cloop -= replen;
-			cstart = -1;
+			larger = realloc(exp, explen - tokenlen + valuelen + 1);
+			if (larger == NULL) {
+				free(exp);
+				return NULL;
+			}
+			exp = larger;
 		}
-
-		cloop++;
+		memmove(exp + cursor + valuelen, exp + end, explen - end + 1);
+		if (valuelen != 0)
+			memcpy(exp + cursor, value, valuelen);
+		explen = explen - tokenlen + valuelen;
+		/* Continue with the original suffix, including adjacent tokens. */
+		cursor += valuelen;
 	}
 
-	if (explen == 1) {
+	if (explen == 0) {
 		free(exp);
-		exp = NULL;
+		return NULL;
 	}
 
 	return exp;
@@ -316,11 +331,15 @@ filepath_path_to_strvec(const char *path)
 	int strc = 0;
 	const char *estart; /* path element start */
 	const char *eend; /* path element end */
-	int elen;
+	size_t elen;
 
 	strvec = calloc(MAX_RESPATH, sizeof(char *));
 	if (strvec == NULL)
 		return NULL;
+
+	/* Treat an omitted search path as an empty list. */
+	if (path == NULL)
+		return strvec;
 
 	estart = eend = path;
 
@@ -329,8 +348,8 @@ filepath_path_to_strvec(const char *path)
 			eend++;
 		elen = eend - estart;
 
-		if (elen > 1) {
-			/* more than an empty colon */
+		if (elen > 0) {
+			/* A one-character directory such as "." is valid. */
 			strvec[strc] = expand_path(estart, elen);
 			if (strvec[strc] != NULL) {
 				/* successfully expanded an element */
@@ -356,6 +375,9 @@ filepath_path_to_strvec(const char *path)
 void filepath_free_strvec(char **pathv)
 {
 	int p = 0;
+
+	if (pathv == NULL)
+		return;
 
 	while (pathv[p] != NULL) {
 		free(pathv[p++]);

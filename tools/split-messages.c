@@ -5,6 +5,7 @@
  *
  */
 
+#include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -29,16 +30,16 @@ struct param {
 	/**
 	 * select language
 	 */
-	char *selected;
+	const char *selected;
 	/**
 	 * fallback language for items unavailable in selecte dlanguage
 	 */
-	char *fallback;
+	const char *fallback;
 	int warnings;
-	char *platform;
+	const char *platform;
 	enum out_fmt format;
-	char *infilename;
-	char *outfilename;
+	const char *infilename;
+	const char *outfilename;
 };
 
 struct trnsltn_entry {
@@ -83,11 +84,11 @@ static nserror process_cmdline(int argc, char **argv, struct param *param)
 			break;
 
 		case 'l':
-			param->selected = strdup(optarg);
+			param->selected = optarg;
 			break;
 
 		case 'd':
-			param->fallback = strdup(optarg);
+			param->fallback = optarg;
 			break;
 
 		case 'W':
@@ -95,15 +96,15 @@ static nserror process_cmdline(int argc, char **argv, struct param *param)
 			break;
 
 		case 'o':
-			param->outfilename = strdup(optarg);
+			param->outfilename = optarg;
 			break;
 
 		case 'i':
-			param->infilename = strdup(optarg);
+			param->infilename = optarg;
 			break;
 
 		case 'p':
-			param->platform = strdup(optarg);
+			param->platform = optarg;
 			break;
 
 		case 'f':
@@ -126,12 +127,12 @@ static nserror process_cmdline(int argc, char **argv, struct param *param)
 
 	/* trailing filename arguments */
 	if (optind < argc) {
-		param->infilename = strdup(argv[optind]);
+		param->infilename = argv[optind];
 		optind++;
 	}
 
 	if (optind < argc) {
-		param->outfilename = strdup(argv[optind]);
+		param->outfilename = argv[optind];
 		optind++;
 	}
 
@@ -156,13 +157,12 @@ static nserror process_cmdline(int argc, char **argv, struct param *param)
 
 	if ((param->platform != NULL) &&
 	    (strcmp(param->platform, "any") ==0)) {
-		free(param->platform);
 		param->platform = NULL;
 	}
 
 	/* defaults */
 	if (param->fallback == NULL) {
-		param->fallback = strdup("en");
+		param->fallback = "en";
 	}
 
 	if (param->format == OUTPUTFMT_NONE) {
@@ -344,6 +344,13 @@ translation_add(struct trnsltn_entry **tlist,
 	tnew->lang = strdup(lang);
 	tnew->key = strdup(key);
 	tnew->value = strdup(value);
+	if (tnew->lang == NULL || tnew->key == NULL || tnew->value == NULL) {
+		free(tnew->lang);
+		free(tnew->key);
+		free(tnew->value);
+		free(tnew);
+		return NSERROR_NOMEM;
+	}
 
 	*tlist = tnew;
 	return NSERROR_OK;
@@ -351,20 +358,26 @@ translation_add(struct trnsltn_entry **tlist,
 
 
 /**
- * replace key and value on a translation entry
+ * Replace the language and value while keeping the existing key.
  */
 static nserror
 translation_replace(struct trnsltn_entry *tran,
 		const char *lang,
-		const char *key,
 		const char *value)
 {
+	char *new_lang = strdup(lang);
+	char *new_value = strdup(value);
+
+	/* Preserve the existing entry until both copies succeed. */
+	if (new_lang == NULL || new_value == NULL) {
+		free(new_lang);
+		free(new_value);
+		return NSERROR_NOMEM;
+	}
 	free(tran->lang);
-	tran->lang = strdup(lang);
-	free(tran->key);
-	tran->key = strdup(key);
 	free(tran->value);
-	tran->value = strdup(value);
+	tran->lang = new_lang;
+	tran->value = new_value;
 
 	return NSERROR_OK;
 }
@@ -415,19 +428,18 @@ messageline(struct param *param,
 				 * new entry is in selected language and
 				 * current entry is not
 				 */
-				res = translation_replace(tran, lang, tok, value);
-			} else if ((strcmp(lang, param->fallback) != 0) &&
+				res = translation_replace(tran, lang, value);
+			} else if ((strcmp(lang, param->fallback) == 0) &&
 				   (strcmp(tran->lang, param->fallback) != 0)) {
 				/*
-				 * new entry is in fallback language and
-				 *  current entry is not.
+				 * Prefer the configured fallback over other languages.
 				 */
-				res = translation_replace(tran, lang, tok, value);
+				res = translation_replace(tran, lang, value);
 			}
 		} else {
 			if (strcmp(tran->lang, lang) == 0) {
 				/* second entry with matching language */
-				res = translation_replace(tran, lang, tok, value);
+				res = translation_replace(tran, lang, value);
 			}
 		}
 	} else if (res == NSERROR_NOT_FOUND) {
@@ -458,19 +470,33 @@ fatmessages_read(struct param *param, struct trnsltn_entry **tlist)
 	}
 
 	while (1) {
+		errno = 0;
 		linelen = getline(&line, &linealloc, infile);
 		if (linelen == -1) {
+			/* A read or allocation failure cannot produce a usable catalog. */
+			if (errno != 0 || !feof(infile) || ferror(infile)) {
+				perror("Unable to read input file");
+				free(line);
+				fclose(infile);
+				return NSERROR_INVALID;
+			}
 			break;
 		}
 		linenum++;
 
 		res = messageline(param, tlist, line, linelen);
+		if (res == NSERROR_NOMEM) {
+			free(line);
+			fclose(infile);
+			return res;
+		}
 		if ((res == NSERROR_INVALID) && (param->warnings > 0)) {
 			fprintf(stderr, "line %d Malformed: \"%s\"\n",
 				linenum, line);
 		}
 	}
 
+	free(line);
 	fclose(infile);
 
 	res = translation_list_reverse(tlist);
@@ -518,7 +544,11 @@ message_write(struct param *param, struct trnsltn_entry *tlist)
 		tlist = tlist->next;
 	}
 
-	gzclose(outf);
+	/* The final buffered write can fail even when gzprintf succeeded. */
+	if (gzclose(outf) != Z_OK) {
+		unlink(param->outfilename);
+		return NSERROR_NOSPACE;
+	}
 
 	return NSERROR_OK;
 }
@@ -535,23 +565,18 @@ int main(int argc, char **argv)
 	}
 
 	res = fatmessages_read(&param, &translations);
-	if (res != NSERROR_OK) {
-		return EXIT_FAILURE;
-	}
-
-	switch (param.format) {
-	case OUTPUTFMT_NONE:
-		res = NSERROR_OK;
-		break;
-
-	case OUTPUTFMT_MESSAGES:
+	if (res == NSERROR_OK && param.format == OUTPUTFMT_MESSAGES)
 		res = message_write(&param, translations);
-		break;
+
+	while (translations != NULL) {
+		struct trnsltn_entry *next = translations->next;
+
+		free(translations->lang);
+		free(translations->key);
+		free(translations->value);
+		free(translations);
+		translations = next;
 	}
 
-	if (res != NSERROR_OK) {
-		return EXIT_FAILURE;
-	}
-
-	return EXIT_SUCCESS;
+	return res == NSERROR_OK ? EXIT_SUCCESS : EXIT_FAILURE;
 }

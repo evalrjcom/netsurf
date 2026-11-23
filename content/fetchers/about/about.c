@@ -174,12 +174,17 @@ fetch_about_ssenddataf(struct fetch_about_context *ctx, const char *fmt, ...)
 	fetch_msg msg;
 	va_list ap;
 	int slen;
+	int written;
 
 	va_start(ap, fmt);
 
 	slen = vsnprintf(buffer, sizeof(buffer), fmt, ap);
 
 	va_end(ap);
+
+	/* A formatting error cannot be used as a fetch buffer length. */
+	if (slen < 0)
+		return NSERROR_INVALID;
 
 	if (slen < (int)sizeof(buffer)) {
 		msg.type = FETCH_DATA;
@@ -193,20 +198,25 @@ fetch_about_ssenddataf(struct fetch_about_context *ctx, const char *fmt, ...)
 		return NSERROR_OK;
 	}
 
-	dbuff = malloc(slen + 1);
+	dbuff = malloc((size_t)slen + 1);
 	if (dbuff == NULL) {
 		return NSERROR_NOSPACE;
 	}
 
 	va_start(ap, fmt);
 
-	slen = vsnprintf(dbuff, slen + 1, fmt, ap);
+	written = vsnprintf(dbuff, (size_t)slen + 1, fmt, ap);
 
 	va_end(ap);
 
+	if (written < 0 || written > slen) {
+		free(dbuff);
+		return NSERROR_INVALID;
+	}
+
 	msg.type = FETCH_DATA;
 	msg.data.header_or_data.buf = (const uint8_t *)dbuff;
-	msg.data.header_or_data.len = slen;
+	msg.data.header_or_data.len = written;
 
 	if (fetch_about_send_callback(&msg, ctx)) {
 		free(dbuff);

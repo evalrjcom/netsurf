@@ -90,6 +90,7 @@ endef
 # 1: Feature name (ie, NETSURF_USE_RSVG -> RSVG)
 # 2: pkg-config required modules for feature
 # 3: Human-readable name for the feature
+# Resolve command-line AUTO too, so source lists agree with compiler flags.
 define pkg_config_find_and_add_enabled
   ifeq ($$(PKG_CONFIG),)
     $$(error pkg-config is required to auto-detect feature availability)
@@ -119,12 +120,12 @@ define pkg_config_find_and_add_enabled
       LDFLAGS += $$(shell $$(PKG_CONFIG) --libs $(2)) $$(NETSURF_FEATURE_$(1)_LDFLAGS)
       ifneq ($(MAKECMDGOALS),clean)
         $$(info M.CONFIG: $(3) ($(2))	auto-enabled  (NETSURF_USE_$(1) := AUTO))
-	NETSURF_USE_$(1) := YES
+      override NETSURF_USE_$(1) := YES
       endif
     else
       ifneq ($(MAKECMDGOALS),clean)
         $$(info M.CONFIG: $(3) ($(2))	auto-disabled (NETSURF_USE_$(1) := AUTO))
-	NETSURF_USE_$(1) := NO
+      override NETSURF_USE_$(1) := NO
       endif
     endif
   else ifeq ($$(NETSURF_USE_$(1)),NO)
