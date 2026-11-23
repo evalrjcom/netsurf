@@ -35,7 +35,6 @@
 
 #include "utils/config.h"
 #include "netsurf/inttypes.h"
-#include "utils/config.h"
 #include "utils/utils.h"
 #include "utils/errors.h"
 #include "utils/nsurl.h"
@@ -122,11 +121,9 @@ static unsigned int colour_series[DEF_COLOUR_NUM] =
 static nserror ensure_label_count(struct chart_param *chart, unsigned int count)
 {
 	unsigned int lidx;
-	int deltac;
 	struct chart_label *nlabels;
 
-	deltac = count - chart->data.label_len;
-	if (deltac <= 0) {
+	if (count <= chart->data.label_len) {
 		/* there are enough labels */
 		return NSERROR_OK;
 	}
@@ -139,12 +136,16 @@ static nserror ensure_label_count(struct chart_param *chart, unsigned int count)
 	chart->data.label = nlabels;
 
 	for (lidx = chart->data.label_len; lidx < count; lidx++) {
-		chart->data.label[lidx].title = calloc(1, 20);
-		snprintf(chart->data.label[lidx].title, 19, "item %d", lidx + 1);
-		chart->data.label[lidx].colour = colour_series[lidx % DEF_COLOUR_NUM];
-	}
+		char *title = malloc(20);
 
-	chart->data.label_len = count;
+		if (title == NULL)
+			return NSERROR_NOMEM;
+		snprintf(title, 20, "item %u", lidx + 1);
+		chart->data.label[lidx].title = title;
+		chart->data.label[lidx].colour = colour_series[lidx % DEF_COLOUR_NUM];
+		/* Record only initialized labels so partial allocation can be freed. */
+		chart->data.label_len++;
+	}
 
 	return NSERROR_OK;
 }
@@ -261,13 +262,20 @@ extract_series_labels(struct chart_param *chart,
 	     (valstart < valstrlen) && (valcur < chart->data.label_len);
 	     valstart += vallen, valcur++) {
 		/* get query section length */
+		char *title;
+
 		vallen = 0;
 		while (((valstart + vallen) < valstrlen) &&
 		       (valstr[valstart + vallen] != ',')) {
 			vallen++;
 		}
 
-		chart->data.label[valcur].title = strndup(valstr + valstart, vallen);
+		title = strndup(valstr + valstart, vallen);
+
+		if (title == NULL)
+			return NSERROR_NOMEM;
+		free(chart->data.label[valcur].title);
+		chart->data.label[valcur].title = title;
 		vallen++; /* account for , separator */
 	}
 	return NSERROR_OK;
@@ -315,10 +323,15 @@ process_query_section(const char *str, size_t len, struct chart_param *chart)
 		chart->key = strtoul(str + 4, NULL, 10);
 	} else if ((len > 6) &&
 	    (strncmp(str, "title=", 6) == 0)) {
-		chart->title = strndup(str + 6, len - 6);
+		char *title = strndup(str + 6, len - 6);
+
+		if (title == NULL)
+			return NSERROR_NOMEM;
+		free(chart->title);
+		chart->title = title;
 	} else if ((len > 5) &&
 	    (strncmp(str, "type=", 5) == 0)) {
-		if (strncmp(str + 5, "pie", len - 5) == 0) {
+		if (len == 8 && memcmp(str + 5, "pie", 3) == 0) {
 			chart->type = CHART_TYPE_PIE;
 		} else {
 			chart->type = CHART_TYPE_UNKNOWN;
@@ -368,6 +381,8 @@ chart_from_query(struct nsurl *url, struct chart_param *chart)
 		kvlen++; /* account for & separator */
 	}
 	free(querystr);
+	if (res != NSERROR_OK)
+		return res;
 
 	/* sanity check dimensions */
 	if (chart->width < FIGURE_MIN_WIDTH) {
@@ -399,6 +414,34 @@ chart_from_query(struct nsurl *url, struct chart_param *chart)
 }
 
 
+/* Emit label text with XML metacharacters escaped. */
+static nserror
+output_label_text(struct fetch_about_context *ctx, const char *text)
+{
+	nserror res;
+
+	while (*text != 0) {
+		size_t plain = strcspn(text, "&<>");
+		const char *entity;
+
+		if (plain != 0) {
+			res = fetch_about_senddata(ctx, (const uint8_t *)text, plain);
+			if (res != NSERROR_OK)
+				return res;
+			text += plain;
+		}
+		if (*text == 0)
+			break;
+		entity = *text == '&' ? "&amp;" : (*text == '<' ? "&lt;" : "&gt;");
+		res = fetch_about_ssenddataf(ctx, "%s", entity);
+		if (res != NSERROR_OK)
+			return res;
+		text++;
+	}
+
+	return NSERROR_OK;
+}
+
 static nserror
 output_pie_legend(struct fetch_about_context *ctx, struct chart_param *chart)
 {
@@ -413,14 +456,17 @@ output_pie_legend(struct fetch_about_context *ctx, struct chart_param *chart)
 	case CHART_KEY_NONE:
 		break;
 	case CHART_KEY_RIGHT:
+		/* Leave the legend off when the chart fills the available width. */
 		legend_width = chart->width - chart->area.width - chart->area.x;
-		legend_width -= 10; /* margin */
+		if (legend_width <= 10)
+			break;
+		legend_width -= 10;
 		legend_height = chart->height;
 		vertical_spacing = legend_height / (chart->data.label_len + 1);
 
 		for(lblidx = 0; lblidx < chart->data.label_len ; lblidx++) {
 			res = fetch_about_ssenddataf(ctx,
-				"<rect  x=\"%d\" y=\"%d\" width=\"%d\" height=\"%d\" fill=\"#%06x\" />",
+				"<rect  x=\"%u\" y=\"%u\" width=\"%u\" height=\"%u\" fill=\"#%06x\" />",
 				chart->width - legend_width,
 				(vertical_spacing * lblidx) + (vertical_spacing/2),
 				vertical_spacing * 2 / 3,
@@ -430,11 +476,16 @@ output_pie_legend(struct fetch_about_context *ctx, struct chart_param *chart)
 				return res;
 			}
 			res = fetch_about_ssenddataf(ctx,
-				"<text x=\"%d\" y=\"%d\" fill=\"#%06x\" >%s</text>",
+				"<text x=\"%u\" y=\"%u\" fill=\"#%06x\" >",
 				chart->width - legend_width + vertical_spacing,
 				vertical_spacing * (lblidx+1),
-			     chart->data.label[lblidx].colour,
-				chart->data.label[lblidx].title);
+				chart->data.label[lblidx].colour);
+			if (res != NSERROR_OK)
+				return res;
+			res = output_label_text(ctx, chart->data.label[lblidx].title);
+			if (res != NSERROR_OK)
+				return res;
+			res = fetch_about_ssenddataf(ctx, "</text>");
 			if (res != NSERROR_OK) {
 				return res;
 			}
@@ -481,14 +532,14 @@ pie_chart(struct fetch_about_context *ctx, struct chart_param *chart)
 
 	/* ensure there is data to render */
 	if ((chart->data.series_len < 1) || (chart->data.series[0].len < 2)) {
-		return NSERROR_BAD_PARAMETER;
+		return fetch_about_srverror(ctx);
 	}
 
 	/* get the first series total value */
 	series_total = compute_series_total(chart, 0);
-	if (series_total == 0) {
-		/* dividing by zero is embarasing */
-		return NSERROR_BAD_PARAMETER;
+	if (!isfinite(series_total) || series_total <= 0) {
+		/* Invalid totals cannot produce SVG arc coordinates. */
+		return fetch_about_srverror(ctx);
 	}
 
 	/*
@@ -509,12 +560,16 @@ pie_chart(struct fetch_about_context *ctx, struct chart_param *chart)
 		}
 	}
 
+	if (chart->area.width > chart->width ||
+	    chart->area.height > chart->height)
+		return fetch_about_srverror(ctx);
+
 	/* content is going to return ok */
 	fetch_about_set_http_code(ctx, 200);
 
 	/* content type */
 	if (fetch_about_send_header(ctx,
-			"Content-Type: image/svg; charset=utf-8")) {
+			"Content-Type: image/svg+xml; charset=utf-8")) {
 		goto aborted;
 	}
 
@@ -605,26 +660,24 @@ pie_chart(struct fetch_about_context *ctx, struct chart_param *chart)
  */
 bool fetch_about_chart_handler(struct fetch_about_context *ctx)
 {
-	nserror res;
-	struct chart_param chart;
-	memset(&chart, 0, sizeof(struct chart_param));
+	struct chart_param chart = {0};
+	bool handled;
+	unsigned int i;
 
-	res = chart_from_query(fetch_about_get_url(ctx), &chart);
-	if (res != NSERROR_OK) {
-		goto aborted;
-	}
+	if (chart_from_query(fetch_about_get_url(ctx), &chart) == NSERROR_OK &&
+	    chart.type == CHART_TYPE_PIE)
+		handled = pie_chart(ctx, &chart);
+	else
+		/* Complete invalid requests with an error response. */
+		handled = fetch_about_srverror(ctx);
 
-	switch (chart.type) {
-	case CHART_TYPE_PIE:
-		return pie_chart(ctx, &chart);
+	/* Release all allocations on success, parse failure, and cancellation. */
+	for (i = 0; i < MAX_SERIES; i++)
+		free(chart.data.series[i].value);
+	for (i = 0; i < chart.data.label_len; i++)
+		free(chart.data.label[i].title);
+	free(chart.data.label);
+	free(chart.title);
 
-
-	default:
-		break;
-	}
-
-aborted:
-
-	return false;
-
+	return handled;
 }

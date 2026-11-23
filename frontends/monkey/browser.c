@@ -621,29 +621,31 @@ static void
 monkey_window_handle_exec(int argc, char **argv)
 {
 	struct gui_window *gw;
-	if (argc < 5) {
-		moutf(MOUT_ERROR, "WINDOW EXEC ARGS BAD\n");
+	/* EXEC and CLICK both carry the window ID after the WIN marker. */
+	if (argc < 5 || strcmp(argv[2], "WIN") != 0) {
+		moutf(MOUT_ERROR, "WINDOW EXEC ARGS BAD");
+		return;
 	}
 
-	gw = monkey_find_window_by_num(atoi(argv[2]));
+	gw = monkey_find_window_by_num(atoi(argv[3]));
 
 	if (gw == NULL) {
 		moutf(MOUT_ERROR, "WINDOW NUM BAD");
 	} else {
 		/* Gather argv[4] onward into a string to pass to js_exec */
-		int total = 1;
+		size_t total = 1;
 		for (int i = 4; i < argc; ++i) {
 			total += strlen(argv[i]) + 1;
 		}
 		char *cmd = calloc(total, 1);
 		if (cmd == NULL) {
-			moutf(MOUT_ERROR, "JS WIN %d RET ENOMEM", atoi(argv[2]));
+			moutf(MOUT_ERROR, "JS WIN %d RET ENOMEM", atoi(argv[3]));
 			return;
 		}
 		char *cmdcur = cmd; /* string cursor */
 
 		for (int argi = 4; argi < argc; ++argi) {
-			int argl;
+			size_t argl;
 			argl = strlen(argv[argi]);
 			memcpy(cmdcur, argv[argi], argl);
 			cmdcur+=argl;
@@ -655,8 +657,8 @@ monkey_window_handle_exec(int argc, char **argv)
 
 		/* Now execute the JS */
 
-		moutf(MOUT_WINDOW, "JS WIN %d RET %s", atoi(argv[2]),
-		      browser_window_exec(gw->bw, cmd, total - 1) ? "TRUE" : "FALSE");
+		moutf(MOUT_WINDOW, "JS WIN %d RET %s", atoi(argv[3]),
+		      browser_window_exec(gw->bw, cmd, (size_t)(cmdcur - cmd)) ? "TRUE" : "FALSE");
 
 		free(cmd);
 	}
@@ -669,11 +671,12 @@ monkey_window_handle_click(int argc, char **argv)
 	/* `WINDOW CLICK WIN` _%id%_ `X` _%num%_ `Y` _%num%_ `BUTTON` _%str%_ `KIND` _%str%_ */
 	/*  0      1     2    3       4  5        6  7        8       9        10    11      */
 	struct gui_window *gw;
-	if (argc != 12) {
-		moutf(MOUT_ERROR, "WINDOW CLICK ARGS BAD\n");
+	if (argc != 12 || strcmp(argv[2], "WIN") != 0) {
+		moutf(MOUT_ERROR, "WINDOW CLICK ARGS BAD");
+		return;
 	}
 
-	gw = monkey_find_window_by_num(atoi(argv[2]));
+	gw = monkey_find_window_by_num(atoi(argv[3]));
 
 	if (gw == NULL) {
 		moutf(MOUT_ERROR, "WINDOW NUM BAD");

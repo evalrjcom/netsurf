@@ -431,7 +431,10 @@ package: all-program package-$(TARGET)
 
 .PHONY: install install-$(TARGET)
 
-install: all-program install-$(TARGET)
+install: install-$(TARGET)
+
+# Install recipes copy the executable, so wait for its link in parallel builds.
+install-$(TARGET): all-program
 
 
 # ----------------------------------------------------------------------------

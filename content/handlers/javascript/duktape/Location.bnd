@@ -37,7 +37,8 @@ method Location::reload()
 	window_private_t *priv_win = duk_get_pointer(ctx, -1);
 	duk_pop(ctx);
 
-	if (priv_win->win != NULL) {
+	/* The global object can outlive its associated browser window. */
+	if (priv_win != NULL && priv_win->win != NULL) {
 		browser_window_reload(priv_win->win, false);
 	} else {
 		NSLOG(netsurf, INFO, "failed to get browser context");
@@ -62,7 +63,10 @@ method Location::assign()
 	duk_size_t slen;
 	const char *url = duk_safe_to_lstring(ctx, 0, &slen);
 
-	nsurl_join(priv->url, url, &joined);
+	/* Navigate only after URL resolution has initialized the result. */
+	if (nsurl_join(priv->url, url, &joined) != NSERROR_OK)
+		return DUK_RET_TYPE_ERROR;
+
 	browser_window_navigate(priv_win->win,
 				joined,
 				NULL,
@@ -91,7 +95,10 @@ method Location::replace()
 	duk_size_t slen;
 	const char *url = duk_safe_to_lstring(ctx, 0, &slen);
 
-	nsurl_join(priv->url, url, &joined);
+	/* Navigate only after URL resolution has initialized the result. */
+	if (nsurl_join(priv->url, url, &joined) != NSERROR_OK)
+		return DUK_RET_TYPE_ERROR;
+
 	browser_window_navigate(priv_win->win,
 				joined,
 				NULL,
@@ -139,7 +146,10 @@ setter Location::href()
 	duk_size_t slen;
 	const char *url = duk_safe_to_lstring(ctx, 0, &slen);
 
-	nsurl_join(priv->url, url, &joined);
+	/* Navigate only after URL resolution has initialized the result. */
+	if (nsurl_join(priv->url, url, &joined) != NSERROR_OK)
+		return DUK_RET_TYPE_ERROR;
+
 	browser_window_navigate(priv_win->win,
 				joined,
 				NULL,

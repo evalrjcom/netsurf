@@ -8,6 +8,7 @@ TESTS := \
 	bloom \
 	hashtable \
 	hashmap \
+	filepath \
 	urlescape \
 	utils \
 	messages \
@@ -56,6 +57,9 @@ hashtable_SRCS := utils/hashtable.c test/log.c test/hashtable.c
 # hashmap test sources
 hashmap_SRCS := $(NSURL_SOURCES) utils/hashmap.c utils/corestrings.c test/log.c test/hashmap.c
 hashmap_LD := -lmalloc_fig
+
+# Resource path tests
+filepath_SRCS := utils/filepath.c test/filepath.c
 
 # url escape test sources
 urlescape_SRCS := utils/url.c test/log.c test/urlescape.c

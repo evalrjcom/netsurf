@@ -42,6 +42,7 @@ jobs:
           librsvg2-dev
           libutf8proc-dev
           python3-pyasyncore
+          python3-yaml
           wbritish
 
     - name: Disable -Werror
@@ -53,6 +54,15 @@ jobs:
       run: |
           source docs/env.sh || exit 1
           make -j"$(nproc)" TARGET=monkey
+
+    - name: Run offline Monkey smoke tests
+      env:
+        LC_ALL: C.UTF-8
+      run: |
+          for plan in start-stop start-stop-no-js resource-scheme; do
+            timeout 30s python3 test/monkey_driver.py -m ./nsmonkey \
+              -t "test/monkey-tests/$plan.yaml"
+          done
 
     - name: Run Monkey Test
       env:
